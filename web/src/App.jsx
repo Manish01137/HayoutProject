@@ -107,27 +107,72 @@ const T = {
 };
 
 // ============ STORAGE ============
-const SAFE = (fn) => async (...args) => {
-  try { return await fn(...args); } catch { return null; }
+const loadEvents = () => {
+  try { return JSON.parse(localStorage.getItem('events') || '[]'); } catch { return []; }
+};
+const saveEvents = (events) => {
+  try { localStorage.setItem('events', JSON.stringify(events.slice(0, 500))); } catch { /* empty */ }
+};
+const loadSettings = () => {
+  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('settings') || '{}') }; } catch { return DEFAULT_SETTINGS; }
+};
+const saveSettings = (s) => {
+  try { localStorage.setItem('settings', JSON.stringify(s)); } catch { /* empty */ }
 };
 
-const loadEvents = SAFE(async () => {
-  const r = await window.storage.get('events');
-  return r ? JSON.parse(r.value) : [];
-});
+// ============ API CLIENT ============
+const API_URL = import.meta.env.VITE_API_URL || '';
+const CHILD_ID = 'default';
 
-const saveEvents = SAFE(async (events) => {
-  await window.storage.set('events', JSON.stringify(events.slice(0, 500)));
-});
-
-const loadSettings = SAFE(async () => {
-  const r = await window.storage.get('settings');
-  return r ? { ...DEFAULT_SETTINGS, ...JSON.parse(r.value) } : DEFAULT_SETTINGS;
-});
-
-const saveSettings = SAFE(async (s) => {
-  await window.storage.set('settings', JSON.stringify(s));
-});
+const api = {
+  async postTap(category, item_id, label, label_ar) {
+    if (!API_URL) return null;
+    try {
+      const r = await fetch(`${API_URL}/api/taps`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ child_id: CHILD_ID, category, item_id, label, label_ar }),
+      });
+      return r.ok ? await r.json() : null;
+    } catch { return null; }
+  },
+  async postStress(level, heart_rate, hrv) {
+    if (!API_URL) return null;
+    try {
+      const r = await fetch(`${API_URL}/api/stress`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ child_id: CHILD_ID, level, heart_rate, hrv }),
+      });
+      return r.ok ? await r.json() : null;
+    } catch { return null; }
+  },
+  async ack(id) {
+    if (!API_URL || !Number.isInteger(id)) return;
+    try { await fetch(`${API_URL}/api/events/${id}/ack`, { method: 'POST' }); } catch { /* empty */ }
+  },
+  async list() {
+    if (!API_URL) return null;
+    try {
+      const r = await fetch(`${API_URL}/api/events?child_id=${CHILD_ID}&limit=200`);
+      if (!r.ok) return null;
+      const data = await r.json();
+      return data.map((e) => ({
+        id: e.id,
+        type: e.type,
+        category: e.category,
+        itemId: e.item_id,
+        label: e.label,
+        label_ar: e.label_ar,
+        level: e.level,
+        hr: e.heart_rate,
+        hrv: e.hrv,
+        acknowledged: e.acknowledged,
+        timestamp: e.timestamp,
+      }));
+    } catch { return null; }
+  },
+};
 
 // ============ APP ============
 export default function App() {
@@ -145,9 +190,9 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const [e, s] = await Promise.all([loadEvents(), loadSettings()]);
-      setEvents(e || []);
-      setSettings(s || DEFAULT_SETTINGS);
+      setSettings(loadSettings());
+      const remote = await api.list();
+      setEvents(remote ?? loadEvents());
       setLoaded(true);
     })();
   }, []);
@@ -171,12 +216,27 @@ export default function App() {
   }, [simulating, settings.stressThreshold]);
 
   const addEvent = async (event) => {
-    const e = { ...event, id: Date.now() + Math.random(), timestamp: new Date().toISOString() };
+    const localId = Date.now() + Math.random();
+    const e = { ...event, id: localId, timestamp: new Date().toISOString() };
     setEvents((prev) => {
       const next = [e, ...prev];
       saveEvents(next);
       return next;
     });
+
+    let remote = null;
+    if (event.type === 'tap') {
+      remote = await api.postTap(event.category, event.itemId, event.label, event.label_ar);
+    } else if (event.type === 'stress') {
+      remote = await api.postStress(event.level, event.hr, event.hrv);
+    }
+    if (remote?.id) {
+      setEvents((prev) => {
+        const next = prev.map((x) => (x.id === localId ? { ...x, id: remote.id } : x));
+        saveEvents(next);
+        return next;
+      });
+    }
   };
 
   const handleTap = async (category, item) => {
@@ -194,11 +254,12 @@ export default function App() {
       saveEvents(next);
       return next;
     });
+    api.ack(id);
   };
 
   const clearAll = async () => {
     setEvents([]);
-    await saveEvents([]);
+    saveEvents([]);
   };
 
   const updateSettings = async (s) => {
