@@ -18,6 +18,9 @@ from datetime import datetime
 from typing import List, Optional, Literal
 import asyncio
 import json
+import os
+import urllib.parse
+import urllib.request
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -138,26 +141,30 @@ manager = ConnectionManager()
 
 # ------------------------ Notifications ------------------------
 
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+
+def _telegram_send(text: str) -> None:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = urllib.parse.urlencode({
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+    }).encode()
+    req = urllib.request.Request(url, data=data, method="POST")
+    try:
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception as exc:
+        print(f"[TELEGRAM ERROR] {exc}")
+
+
 async def send_push_notification(child_id: str, title: str, body: str, db: Session):
-    """
-    In production: integrate Firebase Cloud Messaging (FCM) or WhatsApp Business API.
-    Here we print — replace with real integration.
-    """
-    child = db.query(ChildProfile).filter(ChildProfile.id == child_id).first()
     print(f"[NOTIFY] child={child_id} title={title!r} body={body!r}")
-
-    # --- FCM example (requires firebase-admin) ---
-    # from firebase_admin import messaging
-    # if child and child.parent_device_token:
-    #     message = messaging.Message(
-    #         notification=messaging.Notification(title=title, body=body),
-    #         token=child.parent_device_token,
-    #     )
-    #     messaging.send(message)
-
-    # --- WhatsApp example (requires whatsapp business api) ---
-    # if child and child.parent_phone:
-    #     send_whatsapp_template(child.parent_phone, "hayat_alert", [title, body])
+    message = f"<b>{title}</b>\n{body}"
+    await asyncio.to_thread(_telegram_send, message)
 
 
 # ------------------------ App ------------------------
